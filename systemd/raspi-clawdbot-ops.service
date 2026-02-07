@@ -1,0 +1,25 @@
+[Unit]
+Description=raspi-clawdbot-ops status server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/raspi-clawdbot-ops
+ExecStart=/usr/bin/node /opt/raspi-clawdbot-ops/dist/server.js
+Restart=always
+RestartSec=2
+Environment=PORT=8080
+Environment=HOST=0.0.0.0
+# Change to your actual unit name
+Environment=CLAWDBOT_SERVICE=clawdbot-gateway
+
+# Hardening (optional)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/raspi-clawdbot-ops
+
+[Install]
+WantedBy=multi-user.target
