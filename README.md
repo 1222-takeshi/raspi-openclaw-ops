@@ -24,8 +24,14 @@ npm run dev
 
 ## Run (prod)
 
+### Option A: systemd (recommended)
+
+See: `docs/SETUP_SYSTEMD.md`
+
+### Option B: manual
+
 ```bash
-npm ci
+npm ci --include=dev
 npm run build
 npm start
 ```
