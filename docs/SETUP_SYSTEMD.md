@@ -15,17 +15,29 @@ sudo mkdir -p /opt/raspi-openclaw-ops
 sudo chown -R $USER:$USER /opt/raspi-openclaw-ops
 ```
 
-## 2) Install dependencies + build
+## 2) Install (recommended)
+
+### Use install script
+
+From your git working directory:
+
+```bash
+# optional: create a local config file
+cp config/.env.example config/.env.local
+
+# edit config/.env.local
+
+# deploy + build + install systemd + (optional) create overrides
+./scripts/install-systemd.sh
+```
+
+## 3) Manual (if needed)
 
 ```bash
 cd /opt/raspi-openclaw-ops
 npm ci --include=dev
 npm run build
-```
 
-## 3) Install systemd unit
-
-```bash
 sudo cp systemd/raspi-openclaw-ops.service /etc/systemd/system/raspi-openclaw-ops.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now raspi-openclaw-ops
@@ -40,17 +52,27 @@ journalctl -u raspi-openclaw-ops -f
 
 ## 4) Configure Clawdbot health check (optional)
 
-### Option A: set overrides via install script (recommended)
+### Option A: set via `config/.env.local` (recommended)
 
-You can pass env vars when running the installer:
+Edit `config/.env.local` and set:
+
+```env
+CLAWDBOT_PROCESS_PATTERNS=clawdbot-gateway,clawdbot
+```
+
+Then re-run:
+
+```bash
+./scripts/install-systemd.sh
+```
+
+You can also pass env vars inline:
 
 ```bash
 CLAWDBOT_PROCESS_PATTERNS=clawdbot-gateway,clawdbot ./scripts/install-systemd.sh
 ```
 
 ### Option B: set a systemd drop-in manually
-
-If Clawdbot is **not** managed by systemd, use process check:
 
 ```bash
 sudo systemctl edit raspi-openclaw-ops
