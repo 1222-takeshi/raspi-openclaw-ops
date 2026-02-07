@@ -11,11 +11,15 @@ Restart=always
 RestartSec=2
 Environment=PORT=8080
 Environment=HOST=0.0.0.0
-# Change to your actual unit name (optional)
-# If unset, service health is not checked.
+# Health check (optional)
+# Use ONE of the following:
+# 1) systemd unit check
 # Environment=CLAWDBOT_SERVICE=clawdbot-gateway
+# 2) process existence check (pgrep -f)
+# Environment=CLAWDBOT_PROCESS_PATTERN=clawdbot-gateway
 
 Environment=CLAWDBOT_SERVICE=
+Environment=CLAWDBOT_PROCESS_PATTERN=
 
 # Hardening (optional)
 NoNewPrivileges=true
