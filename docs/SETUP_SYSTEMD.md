@@ -40,6 +40,16 @@ journalctl -u raspi-openclaw-ops -f
 
 ## 4) Configure Clawdbot health check (optional)
 
+### Option A: set overrides via install script (recommended)
+
+You can pass env vars when running the installer:
+
+```bash
+CLAWDBOT_PROCESS_PATTERNS=clawdbot-gateway,clawdbot ./scripts/install-systemd.sh
+```
+
+### Option B: set a systemd drop-in manually
+
 If Clawdbot is **not** managed by systemd, use process check:
 
 ```bash
@@ -50,7 +60,7 @@ Add:
 
 ```ini
 [Service]
-Environment=CLAWDBOT_PROCESS_PATTERN=clawdbot-gateway
+Environment=CLAWDBOT_PROCESS_PATTERNS=clawdbot-gateway,clawdbot
 ```
 
 Reload:
