@@ -12,7 +12,7 @@ Raspberry Pi 上で動く OpenClaw/Clawdbot の **運用(ops)** 用リポジト�
 
 現在の実装は以下を収集します：
 - ホスト情報 (uptime / load / memory / IP)
-- systemd サービス状態 (`CLAWDBOT_SERVICE` で指定)
+- （任意）systemd サービス状態（`CLAWDBOT_SERVICE` を設定した場合）
 
 ## Quick start (dev)
 
@@ -34,9 +34,15 @@ npm start
 
 - `PORT` (default: 8080)
 - `HOST` (default: 0.0.0.0)
-- `CLAWDBOT_SERVICE` (default: `clawdbot-gateway`)
+- `CLAWDBOT_SERVICE` (optional)
 
-> `CLAWDBOT_SERVICE` は、raspi 側の systemd unit 名に合わせてください。
+> `CLAWDBOT_SERVICE` を設定すると systemd unit の `is-active` を表示し、inactive の場合は Health を `DEGRADED` にします。
+> 例：
+> 
+> ```bash
+> systemctl list-unit-files | grep -i claw
+> CLAWDBOT_SERVICE=<unit名> npm run dev
+> ```
 
 ## Security note
 
