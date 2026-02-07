@@ -53,10 +53,25 @@ async function collectStatus() {
   const memFree = os.freemem();
 
   const clawdbotService = (process.env.CLAWDBOT_SERVICE ?? '').trim();
-  const clawdbotProcPattern = (process.env.CLAWDBOT_PROCESS_PATTERN ?? '').trim();
+  const clawdbotProcPatternsRaw = (process.env.CLAWDBOT_PROCESS_PATTERNS ?? '').trim();
 
   const clawdbotState = clawdbotService ? await systemctlIsActive(clawdbotService) : null;
-  const clawdbotProcCount = clawdbotProcPattern ? await pgrepCount(clawdbotProcPattern) : null;
+
+  const procPatterns = clawdbotProcPatternsRaw
+    ? clawdbotProcPatternsRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+
+  const procChecks = procPatterns.length
+    ? await Promise.all(
+        procPatterns.map(async (pattern) => {
+          const count = await pgrepCount(pattern);
+          return { pattern, count, running: count > 0 };
+        }),
+      )
+    : null;
 
   let health: Health = 'ok';
   const notes: string[] = [];
@@ -67,10 +82,11 @@ async function collectStatus() {
       health = 'degraded';
       notes.push(`systemd: ${clawdbotService} is ${clawdbotState}`);
     }
-  } else if (clawdbotProcPattern) {
-    if ((clawdbotProcCount ?? 0) === 0) {
+  } else if (procChecks) {
+    const down = procChecks.filter((c) => !c.running);
+    if (down.length) {
       health = 'degraded';
-      notes.push(`process: pattern "${clawdbotProcPattern}" not found`);
+      for (const d of down) notes.push(`process: "${d.pattern}" not running`);
     }
   }
 
@@ -111,12 +127,7 @@ async function collectStatus() {
             state: clawdbotState,
           }
         : null,
-      process: clawdbotProcPattern
-        ? {
-            pattern: clawdbotProcPattern,
-            count: clawdbotProcCount,
-          }
-        : null,
+      process: procChecks,
     },
   };
 }
@@ -176,13 +187,21 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
       </div>
 
       <div class="card half">
-        <p class="k">Clawdbot health check</p>
+        <p class="k">Clawdbot プロセス</p>
         ${data.checks.systemd
-          ? `<p class="v"><code>${data.checks.systemd.unit}</code> = <span style="font-weight:700">${data.checks.systemd.state}</span></p>`
+          ? `<div class="sub">systemd unit: <code>${data.checks.systemd.unit}</code> = <span style="font-weight:700">${data.checks.systemd.state}</span></div>`
           : data.checks.process
-          ? `<p class="v"><code>pgrep -f</code> <span style="color:var(--muted)">${data.checks.process.pattern}</span> → <span style="font-weight:700">${data.checks.process.count}</span></p>`
-          : `<p class="v"><span style="color:var(--muted)">not configured</span></p>`}
-        <div class="sub">Set <code>CLAWDBOT_SERVICE</code> (systemd) or <code>CLAWDBOT_PROCESS_PATTERN</code> (process search).</div>
+          ? `<div style="display:grid;gap:6px">
+              ${data.checks.process
+                .map((c) => {
+                  const color = c.running ? '#16a34a' : '#dc2626';
+                  const label = c.running ? 'RUNNING' : 'NOT RUNNING';
+                  return `<div class="sub"><span style="display:inline-block;width:10px;height:10px;border-radius:999px;background:${color};margin-right:8px"></span><code>${c.pattern}</code>: <span style="font-weight:800;color:${color}">${label}</span> <span style="color:var(--muted)">(match: ${c.count})</span></div>`;
+                })
+                .join('')}
+            </div>`
+          : `<p class="v"><span style="color:var(--muted)">未設定</span></p>`}
+        <div class="sub">設定: <code>CLAWDBOT_SERVICE</code>（systemd）または <code>CLAWDBOT_PROCESS_PATTERNS</code>（例: <code>clawdbot-gateway,clawdbot</code>）</div>
       </div>
 
       <div class="card half">
