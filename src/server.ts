@@ -95,6 +95,45 @@ async function getDiskUsageRoot() {
   }
 }
 
+let lastProcStat: { timeMs: number; total: number; idle: number } | null = null;
+
+async function getCpuUsagePct(): Promise<number | null> {
+  // Linux-only: compute usage from /proc/stat deltas.
+  // Returns percent (0-100). First call returns null.
+  let s: string;
+  try {
+    s = await readFile('/proc/stat', 'utf8');
+  } catch {
+    return null;
+  }
+
+  const line = s.split(/\r?\n/).find((l) => l.startsWith('cpu '));
+  if (!line) return null;
+
+  const parts = line.trim().split(/\s+/).slice(1).map(Number);
+  if (parts.length < 4 || parts.some((n) => !Number.isFinite(n))) return null;
+
+  const [user, nice, system, idle, iowait = 0, irq = 0, softirq = 0, steal = 0] = parts;
+  const idleAll = idle + iowait;
+  const nonIdle = user + nice + system + irq + softirq + steal;
+  const total = idleAll + nonIdle;
+
+  const nowMs = Date.now();
+  const prev = lastProcStat;
+  lastProcStat = { timeMs: nowMs, total, idle: idleAll };
+
+  if (!prev) return null;
+  const dt = nowMs - prev.timeMs;
+  if (dt < 250) return null; // too soon; avoid noisy spikes
+
+  const totald = total - prev.total;
+  const idled = idleAll - prev.idle;
+  if (totald <= 0) return null;
+
+  const usage = ((totald - idled) / totald) * 100;
+  return Math.max(0, Math.min(100, usage));
+}
+
 async function collectStatus() {
   const now = new Date().toISOString();
   const uptimeSec = os.uptime();
@@ -103,6 +142,7 @@ async function collectStatus() {
   const memFree = os.freemem();
 
   const cpuTempC = await getCpuTempC();
+  const cpuUsagePct = await getCpuUsagePct();
   const diskRoot = await getDiskUsageRoot();
 
   const clawdbotService = (process.env.CLAWDBOT_SERVICE ?? '').trim();
@@ -182,6 +222,7 @@ async function collectStatus() {
       memUsedBytes: memUsed,
       memUsedPct,
       cpuTempC,
+      cpuUsagePct,
       diskRoot,
       ips: Object.values(os.networkInterfaces())
         .flat()
@@ -270,6 +311,12 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
             </div>`
           : `<p class="v"><span style="color:var(--muted)">未設定</span></p>`}
         <div class="sub">設定: <code>CLAWDBOT_SERVICE</code>（systemd）または <code>CLAWDBOT_PROCESS_PATTERNS</code>（例: <code>clawdbot-gateway,clawdbot</code>）</div>
+      </div>
+
+      <div class="card half">
+        <p class="k">CPU usage</p>
+        <p class="v">${data.host.cpuUsagePct == null ? '<span style="color:var(--muted)">n/a</span>' : `${data.host.cpuUsagePct.toFixed(0)}/100`}</p>
+        <div class="sub">Calculated from <code>/proc/stat</code> deltas (first request may be n/a)</div>
       </div>
 
       <div class="card half">
