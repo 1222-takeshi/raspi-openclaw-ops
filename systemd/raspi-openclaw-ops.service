@@ -16,10 +16,10 @@ Environment=HOST=0.0.0.0
 # 1) systemd unit check
 # Environment=CLAWDBOT_SERVICE=clawdbot-gateway
 # 2) process existence check (pgrep -f)
-# Environment=CLAWDBOT_PROCESS_PATTERN=clawdbot-gateway
+# Environment=CLAWDBOT_PROCESS_PATTERNS=clawdbot-gateway,clawdbot
 
 Environment=CLAWDBOT_SERVICE=
-Environment=CLAWDBOT_PROCESS_PATTERN=
+Environment=CLAWDBOT_PROCESS_PATTERNS=
 
 # Hardening (optional)
 NoNewPrivileges=true

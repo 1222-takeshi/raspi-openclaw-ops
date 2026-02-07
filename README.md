@@ -41,15 +41,15 @@ npm start
 - `PORT` (default: 8080)
 - `HOST` (default: 0.0.0.0)
 - `CLAWDBOT_SERVICE` (optional)
-- `CLAWDBOT_PROCESS_PATTERN` (optional)
+- `CLAWDBOT_PROCESS_PATTERNS` (optional, comma-separated)
 
 > `CLAWDBOT_SERVICE` を設定すると systemd unit の `is-active` を表示し、inactive の場合は Health を `DEGRADED` にします。
-> systemd 管理していない場合は `CLAWDBOT_PROCESS_PATTERN` を設定して `pgrep -f` でプロセス存在チェックします。
+> systemd 管理していない場合は `CLAWDBOT_PROCESS_PATTERNS` を設定して `pgrep -f` でプロセス存在チェックします。
 >
-> 例（process check / 例: `clawdbot-gateway` が見えているケース）:
+> 例（process check / `clawdbot` と `clawdbot-gateway` を監視）:
 >
 > ```bash
-> CLAWDBOT_PROCESS_PATTERN=clawdbot-gateway npm run dev
+> CLAWDBOT_PROCESS_PATTERNS=clawdbot-gateway,clawdbot npm run dev
 > ```
 
 ## Security note
