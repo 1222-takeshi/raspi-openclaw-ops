@@ -1,5 +1,5 @@
 {
-  "name": "raspi-clawdbot-ops",
+  "name": "raspi-openclaw-ops",
   "version": "0.1.0",
   "private": true,
   "description": "Operations toolkit for Clawdbot running on Raspberry Pi (health/status UI, monitoring, and automation scripts).",
@@ -11,7 +11,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/1222-takeshi/raspi-clawdbot-ops.git"
+    "url": "git+https://github.com/1222-takeshi/raspi-openclaw-ops.git"
   },
   "keywords": [
     "clawdbot",

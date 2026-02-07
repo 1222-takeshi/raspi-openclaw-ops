@@ -1,5 +1,5 @@
 [Unit]
-Description=raspi-clawdbot-ops status server
+Description=raspi-openclaw-ops status server
 After=network-online.target
 Wants=network-online.target
 

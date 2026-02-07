@@ -1,6 +1,6 @@
-# raspi-clawdbot-ops
+# raspi-openclaw-ops
 
-Raspberry Pi 上で動く Clawdbot の **運用(ops)** 用リポジトリ。
+Raspberry Pi 上で動く OpenClaw/Clawdbot の **運用(ops)** 用リポジトリ。
 
 直近のゴールは、同一ネットワーク上の PC/スマホから、Clawdbot の状態を **ブラウザで見やすく確認**できるようにすることです。
 

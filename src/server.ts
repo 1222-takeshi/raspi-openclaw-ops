@@ -85,7 +85,7 @@ async function collectStatus() {
 
 function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
   const healthColor = data.health === 'ok' ? '#16a34a' : data.health === 'degraded' ? '#f59e0b' : '#dc2626';
-  const title = `raspi-clawdbot-ops • ${data.health.toUpperCase()}`;
+  const title = `raspi-openclaw-ops • ${data.health.toUpperCase()}`;
 
   return `<!doctype html>
 <html lang="ja">
@@ -118,7 +118,7 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
   <div class="wrap">
     <div class="top">
       <div>
-        <h1>raspi-clawdbot-ops</h1>
+        <h1>raspi-openclaw-ops</h1>
         <div class="sub">Last updated: ${data.time}</div>
       </div>
       <div class="badge" aria-label="health">
