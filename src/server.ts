@@ -36,13 +36,14 @@ async function collectStatus() {
   const memTotal = os.totalmem();
   const memFree = os.freemem();
 
-  const clawdbotService = process.env.CLAWDBOT_SERVICE ?? 'clawdbot-gateway';
-  const clawdbotState = await systemctlIsActive(clawdbotService);
+  const clawdbotService = (process.env.CLAWDBOT_SERVICE ?? '').trim();
+  const clawdbotState = clawdbotService ? await systemctlIsActive(clawdbotService) : null;
 
   let health: Health = 'ok';
   const notes: string[] = [];
 
-  if (clawdbotState !== 'active') {
+  // Service check is optional. If CLAWDBOT_SERVICE is unset, we don't mark degraded.
+  if (clawdbotService && clawdbotState !== 'active') {
     health = 'degraded';
     notes.push(`systemd: ${clawdbotService} is ${clawdbotState}`);
   }
@@ -77,9 +78,11 @@ async function collectStatus() {
         .filter((x) => x && x.family === 'IPv4' && !x.internal)
         .map((x) => x!.address),
     },
-    services: {
-      [clawdbotService]: clawdbotState,
-    },
+    services: clawdbotService
+      ? {
+          [clawdbotService]: clawdbotState,
+        }
+      : {},
   };
 }
 
@@ -139,8 +142,10 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
 
       <div class="card half">
         <p class="k">Clawdbot service</p>
-        <p class="v"><code>${Object.keys(data.services)[0]}</code> = <span style="font-weight:700">${Object.values(data.services)[0]}</span></p>
-        <div class="sub">Set env <code>CLAWDBOT_SERVICE</code> to match your systemd unit name.</div>
+        ${Object.keys(data.services).length
+          ? `<p class="v"><code>${Object.keys(data.services)[0]}</code> = <span style="font-weight:700">${Object.values(data.services)[0]}</span></p>`
+          : `<p class="v"><span style="color:var(--muted)">not configured</span></p>`}
+        <div class="sub">Option: set env <code>CLAWDBOT_SERVICE</code> to a systemd unit name to include service health.</div>
       </div>
 
       <div class="card half">
