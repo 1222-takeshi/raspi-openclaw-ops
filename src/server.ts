@@ -29,6 +29,22 @@ async function systemctlIsActive(service: string) {
   }
 }
 
+async function pgrepCount(pattern: string) {
+  // Use `pgrep -f` so we can match command line, not only the process name.
+  // Returns number of matching PIDs.
+  try {
+    const { stdout } = await execFileAsync('pgrep', ['-f', pattern], { timeout: 3000 });
+    const pids = stdout
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return pids.length;
+  } catch {
+    // pgrep exits non-zero when no processes matched
+    return 0;
+  }
+}
+
 async function collectStatus() {
   const now = new Date().toISOString();
   const uptimeSec = os.uptime();
@@ -37,15 +53,25 @@ async function collectStatus() {
   const memFree = os.freemem();
 
   const clawdbotService = (process.env.CLAWDBOT_SERVICE ?? '').trim();
+  const clawdbotProcPattern = (process.env.CLAWDBOT_PROCESS_PATTERN ?? '').trim();
+
   const clawdbotState = clawdbotService ? await systemctlIsActive(clawdbotService) : null;
+  const clawdbotProcCount = clawdbotProcPattern ? await pgrepCount(clawdbotProcPattern) : null;
 
   let health: Health = 'ok';
   const notes: string[] = [];
 
-  // Service check is optional. If CLAWDBOT_SERVICE is unset, we don't mark degraded.
-  if (clawdbotService && clawdbotState !== 'active') {
-    health = 'degraded';
-    notes.push(`systemd: ${clawdbotService} is ${clawdbotState}`);
+  // Health checks are optional; enable via env vars.
+  if (clawdbotService) {
+    if (clawdbotState !== 'active') {
+      health = 'degraded';
+      notes.push(`systemd: ${clawdbotService} is ${clawdbotState}`);
+    }
+  } else if (clawdbotProcPattern) {
+    if ((clawdbotProcCount ?? 0) === 0) {
+      health = 'degraded';
+      notes.push(`process: pattern "${clawdbotProcPattern}" not found`);
+    }
   }
 
   // crude memory pressure heuristic
@@ -78,11 +104,20 @@ async function collectStatus() {
         .filter((x) => x && x.family === 'IPv4' && !x.internal)
         .map((x) => x!.address),
     },
-    services: clawdbotService
-      ? {
-          [clawdbotService]: clawdbotState,
-        }
-      : {},
+    checks: {
+      systemd: clawdbotService
+        ? {
+            unit: clawdbotService,
+            state: clawdbotState,
+          }
+        : null,
+      process: clawdbotProcPattern
+        ? {
+            pattern: clawdbotProcPattern,
+            count: clawdbotProcCount,
+          }
+        : null,
+    },
   };
 }
 
@@ -141,11 +176,13 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
       </div>
 
       <div class="card half">
-        <p class="k">Clawdbot service</p>
-        ${Object.keys(data.services).length
-          ? `<p class="v"><code>${Object.keys(data.services)[0]}</code> = <span style="font-weight:700">${Object.values(data.services)[0]}</span></p>`
+        <p class="k">Clawdbot health check</p>
+        ${data.checks.systemd
+          ? `<p class="v"><code>${data.checks.systemd.unit}</code> = <span style="font-weight:700">${data.checks.systemd.state}</span></p>`
+          : data.checks.process
+          ? `<p class="v"><code>pgrep -f</code> <span style="color:var(--muted)">${data.checks.process.pattern}</span> → <span style="font-weight:700">${data.checks.process.count}</span></p>`
           : `<p class="v"><span style="color:var(--muted)">not configured</span></p>`}
-        <div class="sub">Option: set env <code>CLAWDBOT_SERVICE</code> to a systemd unit name to include service health.</div>
+        <div class="sub">Set <code>CLAWDBOT_SERVICE</code> (systemd) or <code>CLAWDBOT_PROCESS_PATTERN</code> (process search).</div>
       </div>
 
       <div class="card half">
@@ -191,7 +228,7 @@ app.get('/', async (_req, reply) => {
 
 app.get('/health.json', async (_req, reply) => {
   const data = await collectStatus();
-  reply.send({ time: data.time, health: data.health, notes: data.notes, services: data.services });
+  reply.send({ time: data.time, health: data.health, notes: data.notes, checks: data.checks });
 });
 
 app.get('/status.json', async (_req, reply) => {
