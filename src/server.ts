@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readFile } from 'node:fs/promises';
 
 const execFileAsync = promisify(execFile);
 
@@ -45,12 +46,64 @@ async function pgrepCount(pattern: string) {
   }
 }
 
+async function getCpuTempC(): Promise<number | null> {
+  // Prefer vcgencmd on Raspberry Pi, fallback to thermal_zone.
+  try {
+    const { stdout } = await execFileAsync('vcgencmd', ['measure_temp'], { timeout: 2000 });
+    // temp=42.0'C
+    const m = stdout.match(/temp=([0-9.]+)/);
+    if (m) return Number(m[1]);
+  } catch {
+    // ignore
+  }
+
+  try {
+    const s = (await readFile('/sys/class/thermal/thermal_zone0/temp', 'utf8')).trim();
+    const milli = Number(s);
+    if (!Number.isFinite(milli)) return null;
+    // Usually millidegree C
+    if (milli > 1000) return milli / 1000;
+    return milli;
+  } catch {
+    return null;
+  }
+}
+
+async function getDiskUsageRoot() {
+  // POSIX output (-P) is easier to parse.
+  try {
+    const { stdout } = await execFileAsync('df', ['-P', '/'], { timeout: 3000 });
+    const lines = stdout.trim().split(/\r?\n/);
+    if (lines.length < 2) return null;
+    const cols = lines[1].split(/\s+/);
+    // Filesystem 1024-blocks Used Available Capacity Mounted on
+    const totalKiB = Number(cols[1]);
+    const usedKiB = Number(cols[2]);
+    const availKiB = Number(cols[3]);
+    const cap = cols[4]; // e.g. 42%
+    const usedPct = Number(cap.replace('%', ''));
+    if (![totalKiB, usedKiB, availKiB, usedPct].every((n) => Number.isFinite(n))) return null;
+    return {
+      totalBytes: totalKiB * 1024,
+      usedBytes: usedKiB * 1024,
+      availBytes: availKiB * 1024,
+      usedPct,
+      mount: '/',
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function collectStatus() {
   const now = new Date().toISOString();
   const uptimeSec = os.uptime();
   const load = os.loadavg();
   const memTotal = os.totalmem();
   const memFree = os.freemem();
+
+  const cpuTempC = await getCpuTempC();
+  const diskRoot = await getDiskUsageRoot();
 
   const clawdbotService = (process.env.CLAWDBOT_SERVICE ?? '').trim();
   const clawdbotProcPatternsRaw = (process.env.CLAWDBOT_PROCESS_PATTERNS ?? '').trim();
@@ -98,6 +151,19 @@ async function collectStatus() {
     notes.push(`memory usage high: ${memUsedPct.toFixed(1)}%`);
   }
 
+  // thresholds (default: temp >= 80C, disk used >= 90%)
+  const tempWarnC = Number(process.env.CPU_TEMP_WARN_C ?? 80);
+  if (cpuTempC != null && Number.isFinite(tempWarnC) && cpuTempC >= tempWarnC) {
+    health = health === 'ok' ? 'degraded' : health;
+    notes.push(`cpu temp high: ${cpuTempC.toFixed(1)}°C (>= ${tempWarnC}°C)`);
+  }
+
+  const diskWarnPct = Number(process.env.DISK_USED_WARN_PCT ?? 90);
+  if (diskRoot && Number.isFinite(diskWarnPct) && diskRoot.usedPct >= diskWarnPct) {
+    health = health === 'ok' ? 'degraded' : health;
+    notes.push(`disk usage high: ${diskRoot.usedPct}% (>= ${diskWarnPct}%)`);
+  }
+
   return {
     time: now,
     health,
@@ -115,6 +181,8 @@ async function collectStatus() {
       memFreeBytes: memFree,
       memUsedBytes: memUsed,
       memUsedPct,
+      cpuTempC,
+      diskRoot,
       ips: Object.values(os.networkInterfaces())
         .flat()
         .filter((x) => x && x.family === 'IPv4' && !x.internal)
@@ -213,6 +281,18 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
       <div class="card half">
         <p class="k">Memory</p>
         <p class="v">Used ${fmtBytes(data.host.memUsedBytes)} / ${fmtBytes(data.host.memTotalBytes)} (${data.host.memUsedPct.toFixed(1)}%)</p>
+      </div>
+
+      <div class="card half">
+        <p class="k">CPU temperature</p>
+        <p class="v">${data.host.cpuTempC == null ? '<span style="color:var(--muted)">n/a</span>' : `${data.host.cpuTempC.toFixed(1)}°C`}</p>
+        <div class="sub">Warn if >= <code>${Number(process.env.CPU_TEMP_WARN_C ?? 80)}°C</code> (env: <code>CPU_TEMP_WARN_C</code>)</div>
+      </div>
+
+      <div class="card half">
+        <p class="k">Disk (/)</p>
+        <p class="v">${data.host.diskRoot ? `Used ${fmtBytes(data.host.diskRoot.usedBytes)} / ${fmtBytes(data.host.diskRoot.totalBytes)} (${data.host.diskRoot.usedPct}%)` : '<span style="color:var(--muted)">n/a</span>'}</p>
+        <div class="sub">Warn if >= <code>${Number(process.env.DISK_USED_WARN_PCT ?? 90)}%</code> (env: <code>DISK_USED_WARN_PCT</code>)</div>
       </div>
 
       <div class="card">

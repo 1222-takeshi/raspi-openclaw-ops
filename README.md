@@ -11,7 +11,7 @@ Raspberry Pi 上で動く OpenClaw/Clawdbot の **運用(ops)** 用リポジト�
 - `GET /status.json` : 詳細 JSON
 
 現在の実装は以下を収集します：
-- ホスト情報 (uptime / load / memory / IP)
+- ホスト情報 (uptime / load / memory / CPU温度 / ディスク使用率 / IP)
 - （任意）systemd サービス状態（`CLAWDBOT_SERVICE` を設定した場合）
 
 ## Quick start (dev)
