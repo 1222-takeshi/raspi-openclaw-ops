@@ -96,8 +96,9 @@ async function getDiskUsageRoot() {
 }
 
 let lastProcStat: { timeMs: number; total: number; idle: number } | null = null;
+let cpuUsageSamples: Array<{ timeMs: number; usagePct: number }> = [];
 
-async function getCpuUsagePct(): Promise<number | null> {
+async function getCpuUsagePctInstant(): Promise<number | null> {
   // Linux-only: compute usage from /proc/stat deltas.
   // Returns percent (0-100). First call returns null.
   let s: string;
@@ -134,6 +135,21 @@ async function getCpuUsagePct(): Promise<number | null> {
   return Math.max(0, Math.min(100, usage));
 }
 
+function recordCpuUsageSample(timeMs: number, usagePct: number) {
+  cpuUsageSamples.push({ timeMs, usagePct });
+  // keep last 60s of samples
+  const cutoff = timeMs - 60_000;
+  cpuUsageSamples = cpuUsageSamples.filter((s) => s.timeMs >= cutoff);
+}
+
+function cpuUsageAvg(windowMs: number, nowMs: number) {
+  const from = nowMs - windowMs;
+  const samples = cpuUsageSamples.filter((s) => s.timeMs >= from && s.timeMs <= nowMs);
+  if (!samples.length) return null;
+  const sum = samples.reduce((a, s) => a + s.usagePct, 0);
+  return sum / samples.length;
+}
+
 function formatLocalTime(date: Date, timeZone: string) {
   // Example: 2026/02/08 10:37:12 (JST)
   const fmt = new Intl.DateTimeFormat('ja-JP', {
@@ -158,7 +174,12 @@ async function collectStatus() {
   const memFree = os.freemem();
 
   const cpuTempC = await getCpuTempC();
-  const cpuUsagePct = await getCpuUsagePct();
+
+  const nowMs = Date.now();
+  const cpuUsagePctInstant = await getCpuUsagePctInstant();
+  if (cpuUsagePctInstant != null) recordCpuUsageSample(nowMs, cpuUsagePctInstant);
+  const cpuUsagePctAvg10s = cpuUsageAvg(10_000, nowMs);
+
   const diskRoot = await getDiskUsageRoot();
 
   const clawdbotService = (process.env.CLAWDBOT_SERVICE ?? '').trim();
@@ -243,7 +264,8 @@ async function collectStatus() {
       memUsedBytes: memUsed,
       memUsedPct,
       cpuTempC,
-      cpuUsagePct,
+      cpuUsagePctInstant,
+      cpuUsagePctAvg10s,
       diskRoot,
       ips: Object.values(os.networkInterfaces())
         .flat()
@@ -336,8 +358,16 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
 
       <div class="card half">
         <p class="k">CPU usage</p>
-        <p class="v">${data.host.cpuUsagePct == null ? '<span style="color:var(--muted)">n/a</span>' : `${data.host.cpuUsagePct.toFixed(0)}/100`}</p>
-        <div class="sub">Calculated from <code>/proc/stat</code> deltas (first request may be n/a)</div>
+        <p class="v">
+          <span style="font-weight:800">avg10s:</span>
+          ${data.host.cpuUsagePctAvg10s == null
+            ? '<span style="color:var(--muted)">n/a</span>'
+            : `${data.host.cpuUsagePctAvg10s.toFixed(0)}%`}
+        </p>
+        <div class="sub">
+          now: ${data.host.cpuUsagePctInstant == null ? 'n/a' : `${data.host.cpuUsagePctInstant.toFixed(0)}%`}
+          ・ calculated from <code>/proc/stat</code> deltas (first request may be n/a)
+        </div>
       </div>
 
       <div class="card half">
