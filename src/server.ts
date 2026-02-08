@@ -134,8 +134,24 @@ async function getCpuUsagePct(): Promise<number | null> {
   return Math.max(0, Math.min(100, usage));
 }
 
+function formatLocalTime(date: Date, timeZone: string) {
+  // Example: 2026/02/08 10:37:12 (JST)
+  const fmt = new Intl.DateTimeFormat('ja-JP', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  return fmt.format(date);
+}
+
 async function collectStatus() {
-  const now = new Date().toISOString();
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
   const uptimeSec = os.uptime();
   const load = os.loadavg();
   const memTotal = os.totalmem();
@@ -204,8 +220,13 @@ async function collectStatus() {
     notes.push(`disk usage high: ${diskRoot.usedPct}% (>= ${diskWarnPct}%)`);
   }
 
+  const timeZone = (process.env.TIME_ZONE ?? 'Asia/Tokyo').trim() || 'Asia/Tokyo';
+  const timeLocal = formatLocalTime(nowDate, timeZone);
+
   return {
     time: now,
+    timeZone,
+    timeLocal,
     health,
     notes,
     host: {
@@ -277,7 +298,7 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
     <div class="top">
       <div>
         <h1>raspi-openclaw-ops</h1>
-        <div class="sub">Last updated: ${data.time}</div>
+        <div class="sub">Last updated: ${data.timeLocal} <span style="color:var(--muted)">(${data.timeZone})</span></div>
       </div>
       <div class="badge" aria-label="health">
         <span class="dot"></span>
