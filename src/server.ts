@@ -8,6 +8,16 @@ const execFileAsync = promisify(execFile);
 
 type Health = 'ok' | 'degraded' | 'down';
 
+type MetricsSample = {
+  time: string; // ISO
+  timeMs: number;
+  cpuUsagePctInstant: number | null;
+  cpuUsagePctAvg10s: number | null;
+  cpuTempC: number | null;
+  diskUsedPct: number | null;
+  memUsedPct: number;
+};
+
 function fmtBytes(n: number) {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
@@ -97,6 +107,10 @@ async function getDiskUsageRoot() {
 
 let lastProcStat: { timeMs: number; total: number; idle: number } | null = null;
 let cpuUsageSamples: Array<{ timeMs: number; usagePct: number }> = [];
+
+let metricsHistory: MetricsSample[] = [];
+const METRICS_MAX_SAMPLES = 12 * 60; // 12 samples/min * 60 min = 1 hour at 5s interval
+const METRICS_INTERVAL_MS = Number(process.env.METRICS_INTERVAL_MS ?? 5000);
 
 async function getCpuUsagePctInstant(): Promise<number | null> {
   // Linux-only: compute usage from /proc/stat deltas.
@@ -284,54 +298,75 @@ async function collectStatus() {
   };
 }
 
+function addMetricsSampleFromStatus(status: Awaited<ReturnType<typeof collectStatus>>): MetricsSample {
+  const timeMs = Date.parse(status.time);
+  const diskUsedPct = status.host.diskRoot ? status.host.diskRoot.usedPct : null;
+  const s: MetricsSample = {
+    time: status.time,
+    timeMs,
+    cpuUsagePctInstant: status.host.cpuUsagePctInstant ?? null,
+    cpuUsagePctAvg10s: status.host.cpuUsagePctAvg10s ?? null,
+    cpuTempC: status.host.cpuTempC ?? null,
+    diskUsedPct,
+    memUsedPct: status.host.memUsedPct,
+  };
+
+  metricsHistory.push(s);
+  if (metricsHistory.length > METRICS_MAX_SAMPLES) {
+    metricsHistory = metricsHistory.slice(metricsHistory.length - METRICS_MAX_SAMPLES);
+  }
+  return s;
+}
+
+let metricsSamplerStarted = false;
+function startMetricsSampler() {
+  if (metricsSamplerStarted) return;
+  metricsSamplerStarted = true;
+
+  const interval = Number.isFinite(METRICS_INTERVAL_MS) && METRICS_INTERVAL_MS >= 1000 ? METRICS_INTERVAL_MS : 5000;
+  setInterval(async () => {
+    try {
+      const status = await collectStatus();
+      addMetricsSampleFromStatus(status);
+    } catch {
+      // ignore
+    }
+  }, interval).unref?.();
+}
+
 function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
   const healthColor = data.health === 'ok' ? '#16a34a' : data.health === 'degraded' ? '#f59e0b' : '#dc2626';
   const title = `raspi-openclaw-ops • ${data.health.toUpperCase()}`;
 
-  return `<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${title}</title>
-  <style>
-    :root{--bg:#0b1020;--panel:#0f172a;--muted:#94a3b8;--text:#e2e8f0;--border:#1f2a44;}
-    *{box-sizing:border-box;font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;}
-    body{margin:0;background:linear-gradient(180deg,#070a14,#0b1020);color:var(--text);}
-    .wrap{max-width:980px;margin:0 auto;padding:24px;}
-    .top{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;}
-    .badge{display:inline-flex;align-items:center;gap:10px;padding:10px 14px;border-radius:999px;background:rgba(255,255,255,0.04);border:1px solid var(--border);}
-    .dot{width:10px;height:10px;border-radius:999px;background:${healthColor};box-shadow:0 0 18px ${healthColor};}
-    h1{font-size:18px;margin:0;letter-spacing:0.2px;}
-    .sub{color:var(--muted);font-size:12px;margin-top:4px;}
-    .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px;margin-top:16px;}
-    .card{grid-column:span 12;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:16px;padding:16px;}
-    @media(min-width:860px){.card.half{grid-column:span 6;}}
-    .k{color:var(--muted);font-size:12px;margin:0 0 6px;}
-    .v{font-size:16px;margin:0;}
-    ul{margin:8px 0 0 18px;color:var(--text);} 
-    a{color:#60a5fa;text-decoration:none;} a:hover{text-decoration:underline;}
-    code{background:rgba(255,255,255,0.06);padding:2px 6px;border-radius:8px;border:1px solid var(--border)}
-    .footer{margin-top:14px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="top">
-      <div>
-        <h1>raspi-openclaw-ops</h1>
-        <div class="sub">Last updated: ${data.timeLocal} <span style="color:var(--muted)">(${data.timeZone})</span></div>
-      </div>
-      <div class="badge" aria-label="health">
-        <span class="dot"></span>
-        <div>
-          <div style="font-size:12px;color:var(--muted)">Health</div>
-          <div style="font-weight:700">${data.health.toUpperCase()}</div>
+  const metricsSection = `
+      <div class="card">
+        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:12px; flex-wrap:wrap">
+          <div>
+            <p class="k">CPU usage（avg10s）</p>
+            <p class="v" style="font-size:28px; font-weight:900; margin-top:2px">
+              ${data.host.cpuUsagePctAvg10s == null ? '<span style="color:var(--muted)">n/a</span>' : `${data.host.cpuUsagePctAvg10s.toFixed(0)}%`}
+            </p>
+            <div class="sub">now: ${data.host.cpuUsagePctInstant == null ? 'n/a' : `${data.host.cpuUsagePctInstant.toFixed(0)}%`} ・ source: <code>/proc/stat</code></div>
+          </div>
+          <div class="sub">Last updated: ${data.timeLocal} (${data.timeZone})</div>
+        </div>
+        <div style="margin-top:12px">
+          <canvas id="cpuChart" height="120" style="width:100%; background: rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:14px"></canvas>
+          <div class="sub" style="margin-top:6px">直近の推移（メモリ内保持）。更新は約5秒ごと。</div>
         </div>
       </div>
-    </div>
 
-    <div class="grid">
+      <div class="card">
+        <p class="k">メトリクス</p>
+        <div class="sub">
+          <div>CPU temp: <b>${data.host.cpuTempC == null ? 'n/a' : `${data.host.cpuTempC.toFixed(1)}°C`}</b></div>
+          <div>Disk (/): <b>${data.host.diskRoot ? `${data.host.diskRoot.usedPct}%` : 'n/a'}</b></div>
+          <div>Memory used: <b>${data.host.memUsedPct.toFixed(1)}%</b></div>
+        </div>
+      </div>
+  `;
+
+  const summarySection = `
       <div class="card half">
         <p class="k">Host</p>
         <p class="v">${data.host.hostname} <span style="color:var(--muted);font-size:12px">(${data.host.platform}/${data.host.arch})</span></p>
@@ -354,20 +389,6 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
             </div>`
           : `<p class="v"><span style="color:var(--muted)">未設定</span></p>`}
         <div class="sub">設定: <code>CLAWDBOT_SERVICE</code>（systemd）または <code>CLAWDBOT_PROCESS_PATTERNS</code>（例: <code>clawdbot-gateway,clawdbot</code>）</div>
-      </div>
-
-      <div class="card half">
-        <p class="k">CPU usage</p>
-        <p class="v">
-          <span style="font-weight:800">avg10s:</span>
-          ${data.host.cpuUsagePctAvg10s == null
-            ? '<span style="color:var(--muted)">n/a</span>'
-            : `${data.host.cpuUsagePctAvg10s.toFixed(0)}%`}
-        </p>
-        <div class="sub">
-          now: ${data.host.cpuUsagePctInstant == null ? 'n/a' : `${data.host.cpuUsagePctInstant.toFixed(0)}%`}
-          ・ calculated from <code>/proc/stat</code> deltas (first request may be n/a)
-        </div>
       </div>
 
       <div class="card half">
@@ -403,8 +424,68 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
         <div class="sub">
           <div><a href="/health.json">/health.json</a> (machine readable)</div>
           <div><a href="/status.json">/status.json</a> (full status)</div>
+          <div><a href="/metrics.json">/metrics.json</a> (metrics history)</div>
         </div>
       </div>
+  `;
+
+  return `<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title}</title>
+  <style>
+    :root{--bg:#0b1020;--panel:#0f172a;--muted:#94a3b8;--text:#e2e8f0;--border:#1f2a44;}
+    *{box-sizing:border-box;font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;}
+    body{margin:0;background:linear-gradient(180deg,#070a14,#0b1020);color:var(--text);}
+    .wrap{max-width:980px;margin:0 auto;padding:24px;}
+    .top{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;}
+    .badge{display:inline-flex;align-items:center;gap:10px;padding:10px 14px;border-radius:999px;background:rgba(255,255,255,0.04);border:1px solid var(--border);}
+    .dot{width:10px;height:10px;border-radius:999px;background:${healthColor};box-shadow:0 0 18px ${healthColor};}
+    h1{font-size:18px;margin:0;letter-spacing:0.2px;}
+    .sub{color:var(--muted);font-size:12px;margin-top:4px;}
+    .tabs{display:flex;gap:8px;margin-top:14px}
+    .tab{padding:8px 12px;border-radius:999px;border:1px solid var(--border);background:rgba(255,255,255,0.03);color:var(--text);cursor:pointer;font-size:12px}
+    .tab[aria-selected="true"]{background:rgba(96,165,250,0.16);border-color:rgba(96,165,250,0.35)}
+    .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px;margin-top:16px;}
+    .card{grid-column:span 12;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:16px;padding:16px;}
+    @media(min-width:860px){.card.half{grid-column:span 6;}}
+    .k{color:var(--muted);font-size:12px;margin:0 0 6px;}
+    .v{font-size:16px;margin:0;}
+    ul{margin:8px 0 0 18px;color:var(--text);} 
+    a{color:#60a5fa;text-decoration:none;} a:hover{text-decoration:underline;}
+    code{background:rgba(255,255,255,0.06);padding:2px 6px;border-radius:8px;border:1px solid var(--border)}
+    .footer{margin-top:14px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <h1>raspi-openclaw-ops</h1>
+        <div class="sub">Last updated: ${data.timeLocal} <span style="color:var(--muted)">(${data.timeZone})</span></div>
+      </div>
+      <div class="badge" aria-label="health">
+        <span class="dot"></span>
+        <div>
+          <div style="font-size:12px;color:var(--muted)">Health</div>
+          <div style="font-weight:700">${data.health.toUpperCase()}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="views">
+      <button class="tab" role="tab" aria-selected="true" data-tab="summary">Summary</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="metrics">Metrics</button>
+    </div>
+
+    <div id="view-summary" class="grid">
+      ${summarySection}
+    </div>
+
+    <div id="view-metrics" class="grid" style="display:none">
+      ${metricsSection}
     </div>
 
     <div class="footer">
@@ -412,11 +493,83 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
       <div><a href="/status.json">JSON</a></div>
     </div>
   </div>
+
+<script>
+(function(){
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  function setTab(name){
+    for (const t of tabs) t.setAttribute('aria-selected', t.dataset.tab === name ? 'true' : 'false');
+    document.getElementById('view-summary').style.display = name==='summary' ? 'grid' : 'none';
+    document.getElementById('view-metrics').style.display = name==='metrics' ? 'grid' : 'none';
+    if (name==='metrics') renderChart();
+  }
+  for (const t of tabs) t.addEventListener('click', ()=>setTab(t.dataset.tab));
+
+  async function fetchMetrics(){
+    const r = await fetch('/metrics.json', {cache:'no-store'});
+    return await r.json();
+  }
+
+  function drawLine(ctx, points, w, h){
+    ctx.clearRect(0,0,w,h);
+    ctx.strokeStyle = 'rgba(96,165,250,0.9)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    points.forEach((p,i)=>{ if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); });
+    ctx.stroke();
+  }
+
+  async function renderChart(){
+    const canvas = document.getElementById('cpuChart');
+    if(!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const cssW = canvas.getBoundingClientRect().width;
+    const cssH = canvas.getBoundingClientRect().height;
+    canvas.width = Math.floor(cssW * devicePixelRatio);
+    canvas.height = Math.floor(cssH * devicePixelRatio);
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+
+    let data;
+    try{ data = await fetchMetrics(); }catch(e){ return; }
+    const samples = (data.samples||[]).filter(s=> typeof s.cpuUsagePctAvg10s === 'number');
+    if(samples.length<2) return;
+
+    const w = cssW, h = cssH;
+    const minX = samples[0].timeMs, maxX = samples[samples.length-1].timeMs;
+    const ys = samples.map(s=>s.cpuUsagePctAvg10s);
+    const minY = 0, maxY = Math.max(100, ...ys);
+
+    const points = samples.map(s=>({
+      x: ((s.timeMs - minX) / (maxX - minX)) * (w-8) + 4,
+      y: h - (((s.cpuUsagePctAvg10s - minY) / (maxY - minY)) * (h-8) + 4)
+    }));
+
+    // grid
+    ctx.strokeStyle = 'rgba(148,163,184,0.18)';
+    ctx.lineWidth = 1;
+    for(let i=0;i<=4;i++){
+      const y = (h/4)*i;
+      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke();
+    }
+    drawLine(ctx, points, w, h);
+  }
+
+  // refresh when metrics tab visible
+  setInterval(()=>{
+    const selected = tabs.find(t=>t.getAttribute('aria-selected')==='true');
+    if(selected && selected.dataset.tab==='metrics') renderChart();
+  }, 5000);
+})();
+</script>
+
 </body>
 </html>`;
 }
 
 const app = Fastify({ logger: true });
+
+// Start background sampler to provide metrics history for graphs.
+startMetricsSampler();
 
 app.get('/', async (_req, reply) => {
   const data = await collectStatus();
@@ -431,6 +584,21 @@ app.get('/health.json', async (_req, reply) => {
 app.get('/status.json', async (_req, reply) => {
   const data = await collectStatus();
   reply.send(data);
+});
+
+app.get('/metrics.json', async (_req, reply) => {
+  // Ensure we have at least one recent sample.
+  try {
+    const s = await collectStatus();
+    addMetricsSampleFromStatus(s);
+  } catch {
+    // ignore
+  }
+
+  reply.send({
+    intervalMs: Number.isFinite(METRICS_INTERVAL_MS) ? METRICS_INTERVAL_MS : 5000,
+    samples: metricsHistory,
+  });
 });
 
 const port = Number(process.env.PORT ?? 8080);
