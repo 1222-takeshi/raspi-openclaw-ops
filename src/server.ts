@@ -359,13 +359,15 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
       <div class="card half">
         <p class="k">CPU usage</p>
         <p class="v">
-          ${data.host.cpuUsagePctInstant == null
+          <span style="font-weight:800">avg10s:</span>
+          ${data.host.cpuUsagePctAvg10s == null
             ? '<span style="color:var(--muted)">n/a</span>'
-            : `${data.host.cpuUsagePctInstant.toFixed(0)}/100`}
-          <span style="color:var(--muted);font-size:12px; margin-left:8px">(avg10s:
-            ${data.host.cpuUsagePctAvg10s == null ? 'n/a' : `${data.host.cpuUsagePctAvg10s.toFixed(0)}/100`})</span>
+            : `${data.host.cpuUsagePctAvg10s.toFixed(0)}%`}
         </p>
-        <div class="sub">Calculated from <code>/proc/stat</code> deltas (first request may be n/a)</div>
+        <div class="sub">
+          now: ${data.host.cpuUsagePctInstant == null ? 'n/a' : `${data.host.cpuUsagePctInstant.toFixed(0)}%`}
+          ・ calculated from <code>/proc/stat</code> deltas (first request may be n/a)
+        </div>
       </div>
 
       <div class="card half">
