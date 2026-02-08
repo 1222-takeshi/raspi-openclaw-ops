@@ -568,6 +568,51 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
 
 const app = Fastify({ logger: true });
 
+function getProvidedToken(req: any): string | null {
+  const q = (req.query?.token ?? '') as string;
+  if (typeof q === 'string' && q.trim()) return q.trim();
+
+  const auth = (req.headers?.authorization ?? '') as string;
+  if (typeof auth === 'string') {
+    const m = auth.match(/^Bearer\s+(.+)$/i);
+    if (m?.[1]?.trim()) return m[1].trim();
+  }
+
+  const x = (req.headers?.['x-status-token'] ?? '') as string;
+  if (typeof x === 'string' && x.trim()) return x.trim();
+
+  return null;
+}
+
+function statusTokenEnabled() {
+  const t = (process.env.STATUS_TOKEN ?? '').trim();
+  return t.length > 0 ? t : null;
+}
+
+function constantTimeEqual(a: string, b: string) {
+  // best-effort constant time compare
+  if (a.length !== b.length) return false;
+  let out = 0;
+  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return out === 0;
+}
+
+app.addHook('onRequest', async (req, reply) => {
+  const expected = statusTokenEnabled();
+  if (!expected) return;
+
+  const provided = getProvidedToken(req);
+  if (!provided || !constantTimeEqual(provided, expected)) {
+    const wantsHtml = String(req.headers?.accept ?? '').includes('text/html');
+    reply.code(401);
+    if (wantsHtml) {
+      reply.type('text/html; charset=utf-8').send('<h1>401 Unauthorized</h1><p>Token is required.</p>');
+    } else {
+      reply.send({ error: 'unauthorized' });
+    }
+  }
+});
+
 // Start background sampler to provide metrics history for graphs.
 startMetricsSampler();
 
