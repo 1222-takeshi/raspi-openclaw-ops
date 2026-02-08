@@ -126,18 +126,46 @@ else
 fi
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now "${SERVICE_NAME}"
+
+echo "==> Restarting service" >&2
+# enable does not necessarily restart an already-running service; restart explicitly.
+sudo systemctl enable "${SERVICE_NAME}" >/dev/null
+sudo systemctl restart "${SERVICE_NAME}"
 
 # Post-check
-echo "==> Verifying" >&2
-sudo systemctl --no-pager -l status "${SERVICE_NAME}" | sed -n '1,12p' >&2 || true
-
 CHECK_PORT=${PORT:-8080}
+
+echo "==> Verifying" >&2
+sudo systemctl --no-pager -l status "${SERVICE_NAME}" | sed -n '1,16p' >&2 || true
+
+# 1) service active
+if ! sudo systemctl is-active --quiet "${SERVICE_NAME}"; then
+  echo "ERROR: service is not active" >&2
+  exit 3
+fi
+
+# 2) port listening
+if command -v ss >/dev/null 2>&1; then
+  if ! sudo ss -ltnp | grep -q ":${CHECK_PORT} "; then
+    echo "ERROR: port ${CHECK_PORT} is not listening" >&2
+    sudo ss -ltnp | sed -n '1,80p' >&2 || true
+    exit 3
+  fi
+  echo "==> Listen check" >&2
+  sudo ss -ltnp | grep ":${CHECK_PORT} " >&2 || true
+fi
+
+# 3) endpoint check (200 or 401 expected)
 if command -v curl >/dev/null 2>&1; then
-  echo "==> Checking health endpoint: http://127.0.0.1:${CHECK_PORT}/health.json" >&2
-  # NOTE: If STATUS_TOKEN is set, this will likely return 401. That's expected.
-  curl -sS -i "http://127.0.0.1:${CHECK_PORT}/health.json" | head -n 5 || true
-  echo >&2
+  url="http://127.0.0.1:${CHECK_PORT}/health.json"
+  echo "==> Checking health endpoint: ${url}" >&2
+  code=$(curl -sS -o /dev/null -w "%{http_code}" "${url}" || echo "000")
+  if [[ "${code}" != "200" && "${code}" != "401" ]]; then
+    echo "ERROR: unexpected status code: ${code}" >&2
+    curl -sS -i "${url}" | head -n 20 >&2 || true
+    exit 3
+  fi
+  echo "==> health.json status: ${code}" >&2
 fi
 
 echo "==> Done" >&2
