@@ -3,10 +3,11 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
+import { decideNotify, postDiscordWebhook, type Health as HealthType } from './notify.js';
 
 const execFileAsync = promisify(execFile);
 
-type Health = 'ok' | 'degraded' | 'down';
+type Health = HealthType;
 
 type MetricsSample = {
   time: string; // ISO
@@ -319,6 +320,39 @@ function addMetricsSampleFromStatus(status: Awaited<ReturnType<typeof collectSta
 }
 
 let metricsSamplerStarted = false;
+let prevHealthForNotify: Health | null = null;
+let lastNotifiedAtMs: number | null = null;
+
+function fmtHealth(h: Health) {
+  return h.toUpperCase();
+}
+
+function buildDiscordMessage(status: Awaited<ReturnType<typeof collectStatus>>) {
+  const lines: string[] = [];
+  lines.push(`**raspi-openclaw-ops**  Health: **${fmtHealth(status.health)}**`);
+  lines.push(`host: ${status.host.hostname}`);
+
+  const url = (process.env.PUBLIC_STATUS_URL ?? '').trim();
+  if (url) lines.push(`url: ${url}`);
+
+  const cpu = status.host.cpuUsagePctAvg10s;
+  const temp = status.host.cpuTempC;
+  const disk = status.host.diskRoot?.usedPct;
+  const mem = status.host.memUsedPct;
+
+  lines.push(`cpu(avg10s): ${cpu == null ? 'n/a' : cpu.toFixed(0) + '%'}`);
+  lines.push(`cpu temp: ${temp == null ? 'n/a' : temp.toFixed(1) + '°C'}`);
+  lines.push(`disk(/): ${disk == null ? 'n/a' : disk + '%'}`);
+  lines.push(`mem used: ${mem.toFixed(1)}%`);
+
+  if (status.notes.length) {
+    lines.push(`notes: ${status.notes.join(' / ')}`);
+  }
+
+  lines.push(`time: ${status.timeLocal} (${status.timeZone})`);
+  return lines.join('\n');
+}
+
 function startMetricsSampler() {
   if (metricsSamplerStarted) return;
   metricsSamplerStarted = true;
@@ -328,6 +362,33 @@ function startMetricsSampler() {
     try {
       const status = await collectStatus();
       addMetricsSampleFromStatus(status);
+
+      const webhook = (process.env.DISCORD_WEBHOOK_URL ?? '').trim();
+      if (!webhook) {
+        prevHealthForNotify = status.health;
+        return;
+      }
+
+      const minSec = Number(process.env.DISCORD_NOTIFY_MIN_INTERVAL_SEC ?? 300);
+      const minMs = (Number.isFinite(minSec) ? minSec : 300) * 1000;
+      const nowMs = Date.now();
+
+      const decision = decideNotify({
+        prevHealth: prevHealthForNotify,
+        nextHealth: status.health,
+        nowMs,
+        lastNotifiedAtMs,
+        minIntervalMs: minMs,
+        skipInitial: true,
+      });
+
+      prevHealthForNotify = status.health;
+
+      if (decision.shouldNotify) {
+        const msg = buildDiscordMessage(status);
+        await postDiscordWebhook(webhook, msg);
+        lastNotifiedAtMs = nowMs;
+      }
     } catch {
       // ignore
     }
