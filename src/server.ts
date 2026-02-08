@@ -3,6 +3,7 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
+import { getBuildInfo } from './build.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -27,6 +28,21 @@ function fmtBytes(n: number) {
     i++;
   }
   return `${x.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+let cachedPkgVersion: string | null = null;
+async function getPackageVersion(): Promise<string> {
+  if (cachedPkgVersion) return cachedPkgVersion;
+  try {
+    const url = new URL('../package.json', import.meta.url);
+    const txt = await readFile(url, 'utf8');
+    const j = JSON.parse(txt);
+    const v = typeof j?.version === 'string' ? j.version : 'unknown';
+    cachedPkgVersion = v;
+    return v;
+  } catch {
+    return 'unknown';
+  }
 }
 
 async function systemctlIsActive(service: string) {
@@ -182,6 +198,9 @@ function formatLocalTime(date: Date, timeZone: string) {
 async function collectStatus() {
   const nowDate = new Date();
   const now = nowDate.toISOString();
+
+  const pkgVersion = await getPackageVersion();
+  const build = getBuildInfo(process.env as any, pkgVersion);
   const uptimeSec = os.uptime();
   const load = os.loadavg();
   const memTotal = os.totalmem();
@@ -262,6 +281,7 @@ async function collectStatus() {
     time: now,
     timeZone,
     timeLocal,
+    build,
     health,
     notes,
     host: {
@@ -464,7 +484,7 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
     <div class="top">
       <div>
         <h1>raspi-openclaw-ops</h1>
-        <div class="sub">Last updated: ${data.timeLocal} <span style="color:var(--muted)">(${data.timeZone})</span></div>
+        <div class="sub">Last updated: ${data.timeLocal} <span style="color:var(--muted)">(${data.timeZone})</span> ・ v${data.build.version}${data.build.gitRef ? ` (${data.build.gitRef}${data.build.gitSha ? ` @ ${data.build.gitSha}` : ''})` : ''}</div>
       </div>
       <div class="badge" aria-label="health">
         <span class="dot"></span>
@@ -623,7 +643,7 @@ app.get('/', async (_req, reply) => {
 
 app.get('/health.json', async (_req, reply) => {
   const data = await collectStatus();
-  reply.send({ time: data.time, health: data.health, notes: data.notes, checks: data.checks });
+  reply.send({ time: data.time, health: data.health, notes: data.notes, build: data.build, checks: data.checks });
 });
 
 app.get('/status.json', async (_req, reply) => {

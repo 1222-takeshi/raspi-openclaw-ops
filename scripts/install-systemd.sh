@@ -90,6 +90,13 @@ echo "==> Installing systemd unit" >&2
 sudo cp "${APP_DIR}/systemd/${SERVICE_NAME}.service" "/etc/systemd/system/${SERVICE_NAME}.service"
 
 # Write systemd EnvironmentFile if any relevant variables are provided.
+# Also inject build metadata from current git checkout.
+GIT_SHA=$(git rev-parse --short=12 HEAD 2>/dev/null || true)
+# Prefer exact tag, fallback to branch name
+GIT_REF=$(git describe --tags --exact-match 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+BUILD_TIME=$(date -Is 2>/dev/null || true)
+APP_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || true)
+
 OVERRIDE_DIR="/etc/systemd/system/${SERVICE_NAME}.service.d"
 OVERRIDE_FILE="${OVERRIDE_DIR}/override.conf"
 
@@ -108,6 +115,12 @@ if [[ -n "${PORT}" || -n "${HOST}" || -n "${TIME_ZONE}" || -n "${CPU_TEMP_WARN_C
     [[ -n "${CLAWDBOT_SERVICE}" ]] && echo "CLAWDBOT_SERVICE=${CLAWDBOT_SERVICE}"
     [[ -n "${CLAWDBOT_PROCESS_PATTERNS}" ]] && echo "CLAWDBOT_PROCESS_PATTERNS=${CLAWDBOT_PROCESS_PATTERNS}"
     [[ -n "${STATUS_TOKEN}" ]] && echo "STATUS_TOKEN=${STATUS_TOKEN}"
+
+    # build metadata
+    [[ -n "${APP_VERSION}" ]] && echo "APP_VERSION=${APP_VERSION}"
+    [[ -n "${GIT_REF}" ]] && echo "GIT_REF=${GIT_REF}"
+    [[ -n "${GIT_SHA}" ]] && echo "GIT_SHA=${GIT_SHA}"
+    [[ -n "${BUILD_TIME}" ]] && echo "BUILD_TIME=${BUILD_TIME}"
   } >"${tmpenv}"
   sudo install -m 0640 -o root -g root "${tmpenv}" "${ENV_FILE}"
   rm -f "${tmpenv}"
