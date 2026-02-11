@@ -72,6 +72,7 @@ fi
 
 echo "==> Installing to: ${APP_DIR}" >&2
 sudo mkdir -p "${APP_DIR}"
+sudo mkdir -p "${APP_DIR}/data"
 sudo chown -R "$USER:$USER" "${APP_DIR}"
 
 echo "==> Syncing files" >&2
