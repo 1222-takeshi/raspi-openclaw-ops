@@ -6,6 +6,7 @@ import { readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { getBuildInfo } from './build.js';
 import { compute1mRollup, floorToMinute, openDb, type MetricsRawRow } from './metricsDb.js';
+import { getInodeUsageRoot, scanDmesgErrors } from './earlyWarn.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -236,6 +237,7 @@ async function collectStatus() {
   const cpuUsagePctAvg10s = cpuUsageAvg(10_000, nowMs);
 
   const diskRoot = await getDiskUsageRoot();
+  const inodeRoot = await getInodeUsageRoot();
 
   const clawdbotService = (process.env.CLAWDBOT_SERVICE ?? '').trim();
   const clawdbotProcPatternsRaw = (process.env.CLAWDBOT_PROCESS_PATTERNS ?? '').trim();
@@ -296,6 +298,18 @@ async function collectStatus() {
     notes.push(`disk usage high: ${diskRoot.usedPct}% (>= ${diskWarnPct}%)`);
   }
 
+  const inodeWarnPct = Number(process.env.INODE_USED_WARN_PCT ?? 90);
+  if (inodeRoot && Number.isFinite(inodeWarnPct) && inodeRoot.usedPct >= inodeWarnPct) {
+    health = health === 'ok' ? 'degraded' : health;
+    notes.push(`inode usage high: ${inodeRoot.usedPct}% (>= ${inodeWarnPct}%)`);
+  }
+
+  // Early warning: dmesg error summary (best-effort)
+  if (lastDmesgErrorSummary && Date.now() - lastDmesgErrorSummary.atMs < 15 * 60_000) {
+    health = health === 'ok' ? 'degraded' : health;
+    notes.push(`dmesg: ${lastDmesgErrorSummary.reason} (${lastDmesgErrorSummary.count} lines)`);
+  }
+
   const timeZone = (process.env.TIME_ZONE ?? 'Asia/Tokyo').trim() || 'Asia/Tokyo';
   const timeLocal = formatLocalTime(nowDate, timeZone);
 
@@ -323,6 +337,7 @@ async function collectStatus() {
       cpuUsagePctInstant,
       cpuUsagePctAvg10s,
       diskRoot,
+      inodeRoot,
       ips: Object.values(os.networkInterfaces())
         .flat()
         .filter((x) => x && x.family === 'IPv4' && !x.internal)
@@ -373,6 +388,7 @@ function addMetricsSampleFromStatus(status: Awaited<ReturnType<typeof collectSta
 }
 
 let metricsSamplerStarted = false;
+let lastDmesgErrorSummary: { atMs: number; reason: string; count: number } | null = null;
 function startMetricsSampler() {
   if (metricsSamplerStarted) return;
   metricsSamplerStarted = true;
@@ -406,6 +422,16 @@ function startMetricsSampler() {
         metricsDb.pruneRaw(rawCutoff);
         metricsDb.prune1m(m1Cutoff);
         lastPruneAtMs = nowMs;
+
+        // Early warning: best-effort dmesg scan (do not crash if unavailable)
+        const enabled = String(process.env.DMESG_SCAN_ENABLED ?? '1') !== '0';
+        if (enabled) {
+          const maxLines = Number(process.env.DMESG_MAX_LINES ?? 200);
+          const r = await scanDmesgErrors(Number.isFinite(maxLines) ? maxLines : 200);
+          if (r?.found) {
+            lastDmesgErrorSummary = { atMs: nowMs, reason: r.reason ?? 'error', count: r.lines.length };
+          }
+        }
       }
     } catch {
       // ignore
