@@ -2,7 +2,8 @@ import Fastify from 'fastify';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
+import path from 'node:path';
 import { getBuildInfo } from './build.js';
 import { compute1mRollup, floorToMinute, openDb, type MetricsRawRow } from './metricsDb.js';
 
@@ -134,6 +135,16 @@ const METRICS_RAW_RETENTION_HOURS = Number(process.env.METRICS_RAW_RETENTION_HOU
 const METRICS_1M_RETENTION_DAYS = Number(process.env.METRICS_1M_RETENTION_DAYS ?? 30);
 const METRICS_DEFAULT_RANGE_HOURS = Number(process.env.METRICS_DEFAULT_RANGE_HOURS ?? 6);
 
+async function ensureDbDir(dbPath: string) {
+  if (dbPath === ':memory:') return;
+  // If path has no dir (e.g. "metrics.db"), dirname returns "." which is fine.
+  const dir = path.dirname(dbPath);
+  if (dir && dir !== '.') {
+    await mkdir(dir, { recursive: true });
+  }
+}
+
+await ensureDbDir(METRICS_DB_PATH);
 const metricsDb = openDb({ path: METRICS_DB_PATH });
 let pendingRawBatch: MetricsRawRow[] = [];
 let lastRollupBucketStartMs: number | null = null;
