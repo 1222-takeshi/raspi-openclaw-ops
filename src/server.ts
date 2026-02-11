@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { getBuildInfo } from './build.js';
+import { compute1mRollup, floorToMinute, openDb, type MetricsRawRow } from './metricsDb.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -127,6 +128,16 @@ let cpuUsageSamples: Array<{ timeMs: number; usagePct: number }> = [];
 let metricsHistory: MetricsSample[] = [];
 const METRICS_MAX_SAMPLES = 12 * 60; // 12 samples/min * 60 min = 1 hour at 5s interval
 const METRICS_INTERVAL_MS = Number(process.env.METRICS_INTERVAL_MS ?? 5000);
+
+const METRICS_DB_PATH = (process.env.METRICS_DB_PATH ?? '/opt/raspi-openclaw-ops/data/metrics.db').trim();
+const METRICS_RAW_RETENTION_HOURS = Number(process.env.METRICS_RAW_RETENTION_HOURS ?? 24);
+const METRICS_1M_RETENTION_DAYS = Number(process.env.METRICS_1M_RETENTION_DAYS ?? 30);
+const METRICS_DEFAULT_RANGE_HOURS = Number(process.env.METRICS_DEFAULT_RANGE_HOURS ?? 6);
+
+const metricsDb = openDb({ path: METRICS_DB_PATH });
+let pendingRawBatch: MetricsRawRow[] = [];
+let lastRollupBucketStartMs: number | null = null;
+let lastPruneAtMs: number | null = null;
 
 async function getCpuUsagePctInstant(): Promise<number | null> {
   // Linux-only: compute usage from /proc/stat deltas.
@@ -331,10 +342,22 @@ function addMetricsSampleFromStatus(status: Awaited<ReturnType<typeof collectSta
     memUsedPct: status.host.memUsedPct,
   };
 
+  // in-memory history (for quick charts)
   metricsHistory.push(s);
   if (metricsHistory.length > METRICS_MAX_SAMPLES) {
     metricsHistory = metricsHistory.slice(metricsHistory.length - METRICS_MAX_SAMPLES);
   }
+
+  // persistent raw batch
+  pendingRawBatch.push({
+    timeMs,
+    cpuUsagePctInstant: s.cpuUsagePctInstant,
+    cpuUsagePctAvg10s: s.cpuUsagePctAvg10s,
+    cpuTempC: s.cpuTempC,
+    diskUsedPct: s.diskUsedPct,
+    memUsedPct: s.memUsedPct,
+  });
+
   return s;
 }
 
@@ -348,6 +371,31 @@ function startMetricsSampler() {
     try {
       const status = await collectStatus();
       addMetricsSampleFromStatus(status);
+
+      // Flush raw batch (reduce write frequency)
+      if (pendingRawBatch.length) {
+        const batch = pendingRawBatch;
+        pendingRawBatch = [];
+        metricsDb.insertRawMany(batch);
+      }
+
+      // Rollup: once we cross a new minute bucket, roll up the previous full minute.
+      const nowMs = Date.now();
+      const bucket = floorToMinute(nowMs - 60_000);
+      if (lastRollupBucketStartMs == null || bucket > lastRollupBucketStartMs) {
+        const raws = metricsDb.selectRawRange(bucket, bucket + 60_000 - 1);
+        metricsDb.insert1mRow(compute1mRollup(bucket, raws));
+        lastRollupBucketStartMs = bucket;
+      }
+
+      // Prune occasionally (every 10 minutes)
+      if (lastPruneAtMs == null || nowMs - lastPruneAtMs > 10 * 60_000) {
+        const rawCutoff = nowMs - Math.max(1, METRICS_RAW_RETENTION_HOURS) * 3600_000;
+        const m1Cutoff = nowMs - Math.max(1, METRICS_1M_RETENTION_DAYS) * 24 * 3600_000;
+        metricsDb.pruneRaw(rawCutoff);
+        metricsDb.prune1m(m1Cutoff);
+        lastPruneAtMs = nowMs;
+      }
     } catch {
       // ignore
     }
@@ -651,18 +699,52 @@ app.get('/status.json', async (_req, reply) => {
   reply.send(data);
 });
 
-app.get('/metrics.json', async (_req, reply) => {
-  // Ensure we have at least one recent sample.
-  try {
-    const s = await collectStatus();
-    addMetricsSampleFromStatus(s);
-  } catch {
-    // ignore
+app.get('/metrics.json', async (req, reply) => {
+  // Query params:
+  // - rangeHours (default from env)
+  const rangeHours = Number((req.query as any)?.rangeHours ?? METRICS_DEFAULT_RANGE_HOURS);
+  const hours = Number.isFinite(rangeHours) ? Math.max(0.25, Math.min(24 * 30, rangeHours)) : METRICS_DEFAULT_RANGE_HOURS;
+
+  const nowMs = Date.now();
+  const fromMs = nowMs - hours * 3600_000;
+
+  // Strategy:
+  // - last 24h: raw
+  // - older: 1m rollups
+  const rawFromMs = Math.max(fromMs, nowMs - Math.max(1, METRICS_RAW_RETENTION_HOURS) * 3600_000);
+  const rawRows = metricsDb.selectRawRange(rawFromMs, nowMs);
+
+  const rollupRows = fromMs < rawFromMs ? metricsDb.select1mRange(fromMs, rawFromMs) : [];
+
+  const samples: MetricsSample[] = [];
+  for (const r of rollupRows) {
+    samples.push({
+      time: new Date(r.bucketStartMs).toISOString(),
+      timeMs: r.bucketStartMs,
+      cpuUsagePctInstant: null,
+      cpuUsagePctAvg10s: r.cpuUsagePctAvg10s ?? null,
+      cpuTempC: r.cpuTempC ?? null,
+      diskUsedPct: r.diskUsedPct ?? null,
+      memUsedPct: r.memUsedPct,
+    });
+  }
+  for (const r of rawRows) {
+    samples.push({
+      time: new Date(r.timeMs).toISOString(),
+      timeMs: r.timeMs,
+      cpuUsagePctInstant: r.cpuUsagePctInstant ?? null,
+      cpuUsagePctAvg10s: r.cpuUsagePctAvg10s ?? null,
+      cpuTempC: r.cpuTempC ?? null,
+      diskUsedPct: r.diskUsedPct ?? null,
+      memUsedPct: r.memUsedPct,
+    });
   }
 
   reply.send({
     intervalMs: Number.isFinite(METRICS_INTERVAL_MS) ? METRICS_INTERVAL_MS : 5000,
-    samples: metricsHistory,
+    rangeHours: hours,
+    dbPath: METRICS_DB_PATH,
+    samples,
   });
 });
 
