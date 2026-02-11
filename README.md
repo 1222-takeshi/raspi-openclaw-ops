@@ -26,7 +26,11 @@ npm run dev
 
 ### Option A: systemd (recommended)
 
-See: `docs/SETUP_SYSTEMD.md`
+See:
+- `docs/SETUP_SYSTEMD.md`
+- `docs/DEPLOY.md`
+- `docs/OPERATIONS.md`
+- `docs/TROUBLESHOOTING.md`
 
 ### Option B: manual
 
