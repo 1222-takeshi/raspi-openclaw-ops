@@ -457,7 +457,8 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
         </div>
         <div style="margin-top:12px">
           <canvas id="cpuChart" height="120" style="width:100%; background: rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:14px"></canvas>
-          <div class="sub" style="margin-top:6px">直近の推移（メモリ内保持）。更新は約5秒ごと。</div>
+          <div id="metricsError" class="sub" style="margin-top:6px;color:#fca5a5"></div>
+          <div class="sub" style="margin-top:6px">直近の推移。更新は約5秒ごと。</div>
         </div>
       </div>
 
@@ -610,8 +611,19 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
   }
   for (const t of tabs) t.addEventListener('click', ()=>setTab(t.dataset.tab));
 
+  function buildMetricsUrl(){
+    const sp = new URLSearchParams(location.search);
+    const token = sp.get('token');
+    const u = new URL('/metrics.json', location.origin);
+    if (token) u.searchParams.set('token', token);
+    return u.toString();
+  }
+
   async function fetchMetrics(){
-    const r = await fetch('/metrics.json', {cache:'no-store'});
+    const r = await fetch(buildMetricsUrl(), {cache:'no-store'});
+    if(!r.ok){
+      throw new Error('metrics fetch failed: ' + r.status);
+    }
     return await r.json();
   }
 
@@ -626,6 +638,7 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
 
   async function renderChart(){
     const canvas = document.getElementById('cpuChart');
+    const errBox = document.getElementById('metricsError');
     if(!canvas) return;
     const ctx = canvas.getContext('2d');
     const cssW = canvas.getBoundingClientRect().width;
@@ -635,7 +648,7 @@ function htmlPage(data: Awaited<ReturnType<typeof collectStatus>>) {
     ctx.scale(devicePixelRatio, devicePixelRatio);
 
     let data;
-    try{ data = await fetchMetrics(); }catch(e){ return; }
+    try{ data = await fetchMetrics(); if(errBox) errBox.textContent=''; }catch(e){ if(errBox) errBox.textContent = 'グラフ更新に失敗しました（token 付きでアクセスしているか確認してください）'; return; }
     const samples = (data.samples||[]).filter(s=> typeof s.cpuUsagePctAvg10s === 'number');
     if(samples.length<2) return;
 
